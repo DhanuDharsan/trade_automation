@@ -22,20 +22,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Collector
+      - name: Run Collector and Strategy in Parallel
         env:
           DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
           DB_PORT: "5432"
           DB_NAME: "Trade"
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
-        run: python collector.py
-
-      - name: Run Strategy
-        env:
-          DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
-          DB_PORT: "5432"
-          DB_NAME: "Trade"
-          DB_USER: "neondb_owner"
-          DB_PASSWORD: "npg_YCL6POljqg9i"
-        run: python strategy.py
+        run: |
+          python collector.py &
+          python strategy.py &
+          wait
