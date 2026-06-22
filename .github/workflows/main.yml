@@ -22,11 +22,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run trading script
+      - name: Run Collector
         env:
           DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
           DB_PORT: "5432"
           DB_NAME: "Trade"
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
-        run: python main.py
+        run: python collector.py
+
+      - name: Run Strategy
+        env:
+          DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
+          DB_PORT: "5432"
+          DB_NAME: "Trade"
+          DB_USER: "neondb_owner"
+          DB_PASSWORD: "npg_YCL6POljqg9i"
+        run: python strategy.py
