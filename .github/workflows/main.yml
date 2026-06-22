@@ -24,5 +24,9 @@ jobs:
 
       - name: Run trading script
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python your_script.py
+          DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
+          DB_PORT: "5432"
+          DB_NAME: "Trade"
+          DB_USER: "neondb_owner"
+          DB_PASSWORD: "npg_YCL6POljqg9i"
+        run: python main.py
