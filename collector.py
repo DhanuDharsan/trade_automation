@@ -54,11 +54,11 @@ log = logging.getLogger(__name__)
 # DB Config
 # ─────────────────────────────────────────────
 DB_CONFIG = {
-    "host":     "127.0.0.1",
-    "port":      5433,
-    "dbname":   "trading_db",
-    "user":     "postgres",
-    "password": "2000",
+    "host":     "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech",
+    "port":      5432,
+    "dbname":   "Trade",
+    "user":     "neondb_owner",
+    "password": "npg_YCL6POljqg9i",
 }
 
 RISK_FREE_RATE = 0.065   # India 10-yr bond yield approx
