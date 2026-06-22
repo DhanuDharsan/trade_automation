@@ -30,6 +30,6 @@ jobs:
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
         run: |
-          python collector.py &
-          python strategy.py &
+          python collector.py --loop 300 &
+          python strategy.py NIFTY --loop 300 &
           wait
