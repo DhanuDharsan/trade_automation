@@ -2,13 +2,13 @@ name: Trading Bot
 
 on:
   schedule:
-    - cron: '0 4 * * 1-5'  # 9:30am IST = 4:00am UTC, Monday-Friday
-  workflow_dispatch:  # allows manual trigger for testing
+    - cron: '45 3 * * 1-5'  # 9:15 AM IST = 3:45 AM UTC, Mon-Fri
+  workflow_dispatch:          # manual trigger for testing
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 390      # 6.5 hours — covers full market + buffer
 
     steps:
       - name: Checkout code
@@ -30,6 +30,17 @@ jobs:
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
         run: |
-          python collector.py --loop 300 &
-          python strategy.py NIFTY --loop 300 &
-          wait
+          # Start collector first
+          python collector.py --symbol NIFTY --loop 60 &
+          COLLECTOR_PID=$!
+
+          # Wait 5 minutes for collector to build initial ticks
+          echo "Waiting 5 minutes for collector to build ticks..."
+          sleep 300
+
+          # Start strategy in paper mode
+          python strategy.py NIFTY --paper --loop 60 &
+          STRATEGY_PID=$!
+
+          # Wait for both to finish
+          wait $COLLECTOR_PID $STRATEGY_PID
