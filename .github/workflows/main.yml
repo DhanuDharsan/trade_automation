@@ -2,13 +2,13 @@ name: Trading Bot
 
 on:
   schedule:
-    - cron: '45 3 * * 1-5'  # 9:15 AM IST = 3:45 AM UTC, Mon-Fri
+    - cron: '0 2 * * 1-5'  # 7:30am IST = 2:00am UTC, Mon-Fri
   workflow_dispatch:          # manual trigger for testing
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 390      # 6.5 hours — covers full market + buffer
+    timeout-minutes: 510      # 8.5 hours — 7:30am to 4:00pm IST buffer
 
     steps:
       - name: Checkout code
@@ -21,6 +21,15 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Wait for Market Open
+        run: |
+          echo "Bot started early. Waiting for 9:30am IST..."
+          while [ "$(TZ='Asia/Kolkata' date +%H%M)" -lt "0930" ]; do
+            echo "Current IST time: $(TZ='Asia/Kolkata' date +%H:%M) — waiting..."
+            sleep 60
+          done
+          echo "✅ Market open! Starting scripts now..."
 
       - name: Run Collector and Strategy in Parallel
         env:
