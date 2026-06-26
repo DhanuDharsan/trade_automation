@@ -1,9 +1,7 @@
 name: Trading Bot
 
 on:
-  schedule:
-    - cron: '0 2 * * 1-5'  # 7:30am IST = 2:00am UTC, Mon-Fri
-  workflow_dispatch:          # manual trigger for testing
+  workflow_dispatch:          # manual trigger only
 
 jobs:
   run-bot:
