@@ -994,10 +994,9 @@ def run_loop(symbol:str,interval:int,paper:bool=False):
         try:
             ist_now=datetime.now(timezone.utc)+timedelta(hours=5,minutes=30)
             if not is_market_open():
-                log.info("Market closed (%s IST) — waiting…",
+                log.info("Market closed (%s IST) — exiting strategy.",
                          ist_now.strftime("%H:%M"))
-                time.sleep(interval)
-                continue
+                break
             run_strategy(symbol,paper=paper)
         except KeyboardInterrupt:
             raise

@@ -1,12 +1,12 @@
 name: Trading Bot
 
 on:
-  workflow_dispatch:          # manual trigger only
+  workflow_dispatch:   # manual trigger — set alarm for 9:15 AM IST
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 510      # 8.5 hours — 7:30am to 4:00pm IST buffer
+    timeout-minutes: 390   # 6.5 hours safety net (9:15 AM to 3:45 PM IST)
 
     steps:
       - name: Checkout code
@@ -20,15 +20,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Wait for Market Open
-        run: |
-          echo "Bot started early. Waiting for 9:30am IST..."
-          while [ "$(TZ='Asia/Kolkata' date +%H%M)" -lt "0930" ]; do
-            echo "Current IST time: $(TZ='Asia/Kolkata' date +%H:%M) — waiting..."
-            sleep 60
-          done
-          echo "✅ Market open! Starting scripts now..."
-
       - name: Run Collector and Strategy in Parallel
         env:
           DB_HOST: "ep-morning-lake-aoiahvcv-pooler.c-2.ap-southeast-1.aws.neon.tech"
@@ -37,17 +28,13 @@ jobs:
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
         run: |
-          # Start collector first
           python collector.py --symbol NIFTY --loop 60 &
           COLLECTOR_PID=$!
 
-          # Wait 5 minutes for collector to build initial ticks
-          echo "Waiting 5 minutes for collector to build ticks..."
-          sleep 300
+          sleep 300   # give collector 5 min head start
 
-          # Start strategy in paper mode
           python strategy.py NIFTY --paper --loop 60 &
           STRATEGY_PID=$!
 
-          # Wait for both to finish
           wait $COLLECTOR_PID $STRATEGY_PID
+          echo "✅ Both scripts exited cleanly at market close."

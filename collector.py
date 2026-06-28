@@ -733,6 +733,9 @@ def run_loop(symbol: str, interval: int, equity: bool = False):
     consecutive_errors = 0
 
     while True:
+        if not _is_market_hours():
+            log.info("Outside market hours — exiting collector.")
+            break
         try:
             conn       = get_connection()
             fetched_at = datetime.now(timezone.utc)
