@@ -17,8 +17,26 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Verify market hours (warn if triggered late)
+        run: |
+          IST=$(TZ='Asia/Kolkata' date +%H%M)
+          echo "Triggered at IST: $(TZ='Asia/Kolkata' date +%H:%M:%S)"
+          if [ "$IST" -gt "0930" ]; then
+            echo "⚠️  WARNING: Started after 9:30 AM IST — some ticks already missed"
+          else
+            echo "✅ On time!"
+          fi
 
       - name: Run Collector and Strategy in Parallel
         env:
@@ -28,13 +46,17 @@ jobs:
           DB_USER: "neondb_owner"
           DB_PASSWORD: "npg_YCL6POljqg9i"
         run: |
+          echo "🚀 Starting collector..."
           python collector.py --symbol NIFTY --loop 60 &
           COLLECTOR_PID=$!
 
-          sleep 300   # give collector 5 min head start
+          echo "⏳ Waiting 5 minutes for collector to build initial ticks..."
+          sleep 300
 
+          echo "🚀 Starting strategy..."
           python strategy.py NIFTY --paper --loop 60 &
           STRATEGY_PID=$!
 
+          echo "Both running. Waiting for market close self-exit..."
           wait $COLLECTOR_PID $STRATEGY_PID
           echo "✅ Both scripts exited cleanly at market close."

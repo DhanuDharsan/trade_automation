@@ -600,8 +600,8 @@ def check_exit(symbol:str,votes:Votes,ctx:dict)->tuple:
     if vix and vix>VIX_HIGH: return True,f"VIX spike {vix:.1f}",pnl
     from datetime import timedelta
     ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    if ist_now.hour >= 15 and ist_now.minute >= 15:
-        return True, "End of day — 3:15 PM IST", pnl
+    if ist_now.hour == 15 and ist_now.minute >= 25:
+        return True, "End of day — 3:25 PM IST", pnl
     return False,"",pnl
 
 # ── Signal generation ─────────────────────────────────────────
@@ -1004,7 +1004,8 @@ def run_loop(symbol:str,interval:int,paper:bool=False):
             log.warning("Skip: %s",e)
         except Exception as e:
             log.exception("Error: %s",e)
-        log.info("Next in %ds", interval)
+        else:
+            log.info("Next in %ds", interval)
         time.sleep(interval)
 
 if __name__=="__main__":

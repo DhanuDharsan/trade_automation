@@ -717,11 +717,13 @@ def _ist_now():
     return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
 
 def _is_market_hours() -> bool:
-    """True between 9:00 AM and 3:35 PM IST Mon-Fri."""
+    """True between 9:15 AM and 3:30 PM IST Mon-Fri."""
     ist = _ist_now()
     if ist.weekday() >= 5:
         return False
-    return (ist.hour == 9 and ist.minute >= 0) or            (10 <= ist.hour <= 14) or            (ist.hour == 15 and ist.minute <= 35)
+    market_open  = ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= ist <= market_close
 
 def run_loop(symbol: str, interval: int, equity: bool = False):
     log.info("Loop: %s every %d sec. Ctrl+C to stop.", symbol, interval)
@@ -745,7 +747,6 @@ def run_loop(symbol: str, interval: int, equity: bool = False):
             meta             = build_metadata(rows, symbol, fetched_at,
                                               underlying, india_vix, conn)
             upsert_to_db(conn, rows, meta, symbol, underlying, india_vix, fetched_at)
-            conn.close()
             consecutive_errors = 0   # reset on success
 
         except KeyboardInterrupt:
@@ -765,6 +766,13 @@ def run_loop(symbol: str, interval: int, equity: bool = False):
                     log.info("NSE session refreshed.")
                 except Exception as se:
                     log.error("Session refresh failed: %s", se)
+
+        finally:
+            try:
+                if conn and not conn.closed:
+                    conn.close()
+            except Exception:
+                pass
 
         log.info("Sleeping %d sec…\n", interval)
         time.sleep(interval)
