@@ -61,8 +61,8 @@ PCR_BEAR       = 1.3
 VIX_LOW        = 12.0
 VIX_MED        = 15.0
 VIX_HIGH       = 20.0
-BASE_BUY       = 0.58
-BASE_SELL      = -0.58
+BASE_BUY       = 0.50
+BASE_SELL      = -0.50
 DELTA_MIN      = 0.30
 DELTA_MAX      = 0.70
 THETA_MAX      = -15.0
@@ -74,7 +74,8 @@ TGT_PCT        = 30.0
 MAX_LOSSES     = 3
 RISK_PCT       = 2.0
 CAPITAL        = 500000
-LOT_SIZE       = 75
+LOT_SIZES      = {"NIFTY":25,"BANKNIFTY":15,"FINNIFTY":40,"MIDCPNIFTY":75,"NIFTYNXT50":25}
+LOT_SIZE       = 25   # fallback — NIFTY lot size changed to 25 in Nov 2024
 
 class Regime:
     BULL="BULL"; BEAR="BEAR"; SIDEWAYS="SIDEWAYS"; VOLATILE="VOLATILE"
@@ -90,9 +91,9 @@ class Votes:
     WEIGHTS:dict = field(default_factory=lambda:{
         "ema_trend":2,"supertrend":2,"vwap":2,
         "macd":1,"rsi":1,"bb":1,
-        "pcr_oi":2,"pcr_vol":1,"oi_ratio":1,
+        "pcr_oi":1,"pcr_vol":1,"oi_ratio":1,  # reduced — PCR lags intraday
         "oi_wall":2,"vix":2,"max_pain":1,
-        "gex":2,"regime":2,"fii_dii":2,
+        "gex":2,"regime":2,"fii_dii":1,  # reduced — stale daily data
     })
     def score(self)->float:
         v=vars(self); w=self.WEIGHTS
@@ -376,14 +377,14 @@ def implied_move(atm_iv:Optional[float],dte:int=1)->Optional[float]:
     return round(atm_iv/100*math.sqrt(dte/365),4)
 
 def kelly_lots(win_rate:float,avg_win:float,avg_loss:float,
-               capital:float,option_price:float)->int:
+               capital:float,option_price:float,lot_size:int=25)->int:
     try:
         if avg_loss==0 or win_rate<=0: return 1
         lr=1-win_rate
         r=abs(avg_win)/abs(avg_loss)
         k=max(0,(win_rate*r-lr)/r)*0.5
         max_risk=capital*(RISK_PCT/100)
-        cost=option_price*LOT_SIZE
+        cost=option_price*lot_size
         if cost<=0: return 1
         return max(1,min(int(max_risk/cost*k),5))
     except: return 1
@@ -795,7 +796,7 @@ def print_signal(r:SignalResult, stats:PerfStats):
         print(f"  GREEKS          : Δ={t.delta:.3f}  "
               f"θ={t.theta:.2f}/day  ν={t.vega:.3f}")
         print(f"  LOTS            : {t.recommended_lots}  "
-              f"(Capital: ₹{t.last_price*LOT_SIZE*t.recommended_lots:,.0f})")
+              f"(Capital: ₹{t.last_price*LOT_SIZES.get(r.symbol,LOT_SIZE)*t.recommended_lots:,.0f})")
         print(f"  STOP LOSS  ❌   : ₹{t.last_price*(1-SL_PCT/100):.2f}  "
               f"(-{SL_PCT:.0f}%)")
         print(f"  TARGET     ✅   : ₹{t.last_price*(1+TGT_PCT/100):.2f}  "
@@ -943,9 +944,11 @@ def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
         if trade is None:
             action="HOLD"; reason+=" | No contract found"
         else:
+            lot_sz=LOT_SIZES.get(symbol,LOT_SIZE)
             trade.recommended_lots=kelly_lots(
                 stats.win_rate/100 if stats.win_rate>0 else 0.5,
-                stats.avg_win,stats.avg_loss,CAPITAL,trade.last_price)
+                stats.avg_win,stats.avg_loss,CAPITAL,
+                trade.last_price,lot_sz)
             CURRENT_TRADE=TradeState(
                     in_trade=True,direction=action,entry_price=price,
                     option_strike=trade.strike,option_type=trade.option_type,
@@ -1021,6 +1024,3 @@ if __name__=="__main__":
         sys.exit(0)
     except KeyboardInterrupt: log.info("Stopped."); sys.exit(0)
     except Exception as e: log.exception("Fatal: %s",e); sys.exit(2)
-
-
-    
