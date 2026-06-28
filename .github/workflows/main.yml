@@ -1,7 +1,7 @@
 name: Trading Bot
 
 on:
-  workflow_dispatch:   # manual trigger — set alarm for 9:15 AM IST
+  workflow_dispatch:   # manual trigger — set alarm for 9:10 AM IST
 
 jobs:
   run-bot:
@@ -28,14 +28,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Verify market hours (warn if triggered late)
+      - name: Wait for 9:15 AM IST (safe buffer)
         run: |
+          echo "Current IST: $(TZ='Asia/Kolkata' date +%H:%M:%S)"
+          while [ "$(TZ='Asia/Kolkata' date +%H%M)" -lt "0915" ]; do
+            echo "Waiting for 9:15 AM IST... now $(TZ='Asia/Kolkata' date +%H:%M:%S)"
+            sleep 10
+          done
+          echo "✅ 9:15 AM reached — starting scripts!"
           IST=$(TZ='Asia/Kolkata' date +%H%M)
-          echo "Triggered at IST: $(TZ='Asia/Kolkata' date +%H:%M:%S)"
           if [ "$IST" -gt "0930" ]; then
             echo "⚠️  WARNING: Started after 9:30 AM IST — some ticks already missed"
-          else
-            echo "✅ On time!"
           fi
 
       - name: Run Collector and Strategy in Parallel
