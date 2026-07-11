@@ -62,7 +62,10 @@ VIX_LOW        = 12.0
 VIX_MED        = 15.0
 VIX_HIGH       = 20.0
 BASE_BUY       = 0.50
-BASE_SELL      = -0.50
+BASE_SELL      = -0.35   # lowered from -0.50: low VIX (+2) and BULL regime (+2) were
+                         # permanently adding +4 score points, making -0.50 nearly
+                         # unreachable. -0.35 allows PE to fire when ~10/15 factors
+                         # are bearish even in a low-volatility environment.
 DELTA_MIN      = 0.30
 DELTA_MAX      = 0.70
 THETA_MAX      = -15.0
