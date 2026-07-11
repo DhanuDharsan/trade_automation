@@ -158,6 +158,59 @@ def db()->Generator:
     finally:
         if conn and not conn.closed: conn.close()
 
+def load_open_trade_from_db(symbol: str) -> TradeState:
+    """On startup, check DB for any open trade (BUY with no subsequent EXIT).
+    This fixes the GitHub Actions statelessness bug — CURRENT_TRADE resets
+    every run, so we restore it from the DB instead."""
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                # Find last BUY signal for this symbol
+                cur.execute("""
+                    SELECT action, option_type, strike, expiry, option_price,
+                           price, timestamp, recommended_lots
+                    FROM signals
+                    WHERE symbol=%s AND action IN ('BUY_CE','BUY_PE')
+                    ORDER BY timestamp DESC LIMIT 1
+                """, (symbol,))
+                buy_row = cur.fetchone()
+                if not buy_row:
+                    return TradeState()
+
+                buy_action, opt_type, strike, expiry, opt_entry, entry_px, buy_ts, lots = buy_row
+
+                # Check if there's an EXIT after this BUY
+                cur.execute("""
+                    SELECT id FROM signals
+                    WHERE symbol=%s AND action='EXIT'
+                    AND timestamp > %s
+                    ORDER BY timestamp ASC LIMIT 1
+                """, (symbol, buy_ts))
+                exit_row = cur.fetchone()
+
+                if exit_row:
+                    # Trade already closed
+                    return TradeState()
+
+                # No EXIT found — trade is still open, restore state
+                log.info("🔄 Restored open trade from DB: %s %s @ ₹%.2f (entry %s IST)",
+                         opt_type, strike, opt_entry or 0,
+                         (buy_ts + __import__('datetime').timedelta(hours=5, minutes=30)).strftime("%H:%M %d-%b"))
+                return TradeState(
+                    in_trade=True,
+                    direction=buy_action,
+                    entry_price=float(entry_px) if entry_px else 0.0,
+                    option_strike=float(strike) if strike else 0.0,
+                    option_type=str(opt_type) if opt_type else "",
+                    option_expiry=str(expiry) if expiry else "",
+                    option_entry=float(opt_entry) if opt_entry else 0.0,
+                    entry_time=str(buy_ts),
+                    lots=int(lots) if lots else 1,
+                )
+    except Exception as e:
+        log.warning("Could not restore trade state from DB: %s", e)
+    return TradeState()
+
 def ensure_signals_table():
     with db() as conn:
         with conn.cursor() as cur:
@@ -249,11 +302,14 @@ def get_best_option(symbol:str,direction:str,underlying:float)->Optional[OptionT
            AND fetched_at=(SELECT MAX(fetched_at) FROM nse_option_chain WHERE symbol=%s)
            AND dte>=%s AND delta BETWEEN %s AND %s
            AND last_price>0 AND implied_volatility>0
+           AND strike_price BETWEEN %s AND %s
            ORDER BY ABS(delta-0.5) ASC,dte ASC LIMIT 10"""
     try:
+        strike_min = underlying * 0.95
+        strike_max = underlying * 1.05
         with db() as conn:
             df=pd.read_sql_query(sql,conn,
-               params=(symbol,opt_type,symbol,DTE_MIN,dmin,dmax))
+               params=(symbol,opt_type,symbol,DTE_MIN,dmin,dmax,strike_min,strike_max))
         if df.empty: return None
         for _,row in df.iterrows():
             theta=float(row["theta"] or 0)
@@ -886,6 +942,12 @@ def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
         log.info("Market closed (%s IST) — skipping cycle", 
                  ist_now.strftime("%H:%M"))
         return None
+
+    # ── Restore trade state from DB (fixes GitHub Actions statelessness) ──
+    # CURRENT_TRADE resets to empty on every new run. If we already have
+    # an open trade in memory (loop mode), keep it. Otherwise query DB.
+    if not CURRENT_TRADE.in_trade:
+        CURRENT_TRADE = load_open_trade_from_db(symbol)
 
     stats=load_stats(symbol)
     df=get_market_data(symbol)
