@@ -161,58 +161,29 @@ def db()->Generator:
     finally:
         if conn and not conn.closed: conn.close()
 
-def load_open_trade_from_db(symbol: str) -> TradeState:
-    """On startup, check DB for any open trade (BUY with no subsequent EXIT).
-    This fixes the GitHub Actions statelessness bug — CURRENT_TRADE resets
-    every run, so we restore it from the DB instead."""
-    try:
-        with db() as conn:
-            with conn.cursor() as cur:
-                # Find last BUY signal for this symbol
-                cur.execute("""
-                    SELECT action, option_type, strike, expiry, option_price,
-                           price, timestamp, recommended_lots
-                    FROM signals
-                    WHERE symbol=%s AND action IN ('BUY_CE','BUY_PE')
-                    ORDER BY timestamp DESC LIMIT 1
-                """, (symbol,))
-                buy_row = cur.fetchone()
-                if not buy_row:
-                    return TradeState()
+def ensure_tables():
+    """Create all required tables including open_trades for state persistence."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS open_trades (
+                id              BIGSERIAL    PRIMARY KEY,
+                symbol          TEXT         NOT NULL UNIQUE,
+                direction       TEXT         NOT NULL,
+                entry_price     NUMERIC      NOT NULL,
+                option_strike   NUMERIC      NOT NULL,
+                option_type     TEXT         NOT NULL,
+                option_expiry   TEXT         NOT NULL,
+                option_entry    NUMERIC      NOT NULL,
+                entry_time      TEXT,
+                lots            INTEGER      DEFAULT 1,
+                paper_mode      BOOLEAN      DEFAULT TRUE,
+                opened_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            );
+            """)
+        conn.commit()
+    ensure_signals_table()
 
-                buy_action, opt_type, strike, expiry, opt_entry, entry_px, buy_ts, lots = buy_row
-
-                # Check if there's an EXIT after this BUY
-                cur.execute("""
-                    SELECT id FROM signals
-                    WHERE symbol=%s AND action='EXIT'
-                    AND timestamp > %s
-                    ORDER BY timestamp ASC LIMIT 1
-                """, (symbol, buy_ts))
-                exit_row = cur.fetchone()
-
-                if exit_row:
-                    # Trade already closed
-                    return TradeState()
-
-                # No EXIT found — trade is still open, restore state
-                log.info("🔄 Restored open trade from DB: %s %s @ ₹%.2f (entry %s IST)",
-                         opt_type, strike, opt_entry or 0,
-                         (buy_ts + __import__('datetime').timedelta(hours=5, minutes=30)).strftime("%H:%M %d-%b"))
-                return TradeState(
-                    in_trade=True,
-                    direction=buy_action,
-                    entry_price=float(entry_px) if entry_px else 0.0,
-                    option_strike=float(strike) if strike else 0.0,
-                    option_type=str(opt_type) if opt_type else "",
-                    option_expiry=str(expiry) if expiry else "",
-                    option_entry=float(opt_entry) if opt_entry else 0.0,
-                    entry_time=str(buy_ts),
-                    lots=int(lots) if lots else 1,
-                )
-    except Exception as e:
-        log.warning("Could not restore trade state from DB: %s", e)
-    return TradeState()
 
 def ensure_signals_table():
     with db() as conn:
@@ -315,9 +286,17 @@ def get_best_option(symbol:str,direction:str,underlying:float)->Optional[OptionT
                params=(symbol,opt_type,symbol,DTE_MIN,dmin,dmax,strike_min,strike_max))
         if df.empty: return None
         for _,row in df.iterrows():
-            theta=float(row["theta"] or 0)
-            ivr=float(row["iv_rank"]) if row["iv_rank"] else None
-            sp=float(row["bid_ask_spread_pct"]) if row["bid_ask_spread_pct"] else None
+            theta     = float(row["theta"] or 0)
+            ivr       = float(row["iv_rank"]) if row["iv_rank"] else None
+            sp        = float(row["bid_ask_spread_pct"]) if row["bid_ask_spread_pct"] else None
+            strike    = float(row["strike_price"])
+            delta_val = abs(float(row["delta"] or 0))
+            # Strike must be within 5% of spot (prevents far-OTM bug)
+            if abs(strike - underlying) / underlying > 0.05:
+                continue
+            # Delta must be in valid range
+            if delta_val < DELTA_MIN or delta_val > DELTA_MAX:
+                continue
             if theta<THETA_MAX: continue
             if ivr and ivr>IV_RANK_MAX: continue
             if sp and sp>SPREAD_MAX: continue
@@ -508,6 +487,76 @@ def calc_vwap(df:pd.DataFrame)->Optional[float]:
     return round(float((d["cpv"]/d["cv"]).iloc[-1]),2)
 
 # ── Performance stats ─────────────────────────────────────────
+def save_trade_state(symbol:str, state:'TradeState', paper:bool=True):
+    """Persist open trade to DB — survives GitHub Actions restarts."""
+    if not state.in_trade:
+        clear_trade_state(symbol)
+        return
+    sql="""
+        INSERT INTO open_trades
+            (symbol,direction,entry_price,option_strike,option_type,
+             option_expiry,option_entry,entry_time,lots,paper_mode)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (symbol) DO UPDATE SET
+            direction=EXCLUDED.direction, entry_price=EXCLUDED.entry_price,
+            option_strike=EXCLUDED.option_strike, option_type=EXCLUDED.option_type,
+            option_expiry=EXCLUDED.option_expiry, option_entry=EXCLUDED.option_entry,
+            entry_time=EXCLUDED.entry_time, lots=EXCLUDED.lots,
+            paper_mode=EXCLUDED.paper_mode, opened_at=NOW();
+    """
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql,(
+                    symbol,state.direction,state.entry_price,
+                    state.option_strike,state.option_type,
+                    state.option_expiry,state.option_entry,
+                    state.entry_time,state.lots,paper))
+            conn.commit()
+        log.info("Trade state saved: %s %s @ %.2f",
+                 state.direction,state.option_strike,state.option_entry)
+    except Exception as e:
+        log.warning("save_trade_state failed: %s",e)
+
+
+def load_trade_state(symbol:str)->'TradeState':
+    """Load persisted trade from DB on startup."""
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT direction,entry_price,option_strike,option_type,
+                           option_expiry,option_entry,entry_time,lots
+                    FROM open_trades WHERE symbol=%s LIMIT 1
+                """,(symbol,))
+                row=cur.fetchone()
+        if row:
+            state=TradeState(
+                in_trade=True, direction=row[0],
+                entry_price=float(row[1]), option_strike=float(row[2]),
+                option_type=row[3], option_expiry=row[4],
+                option_entry=float(row[5]),
+                entry_time=row[6] or "", lots=int(row[7] or 1))
+            log.info("Trade state restored: %s %s @ %.2f",
+                     state.direction,state.option_strike,state.option_entry)
+            return state
+    except Exception as e:
+        log.warning("load_trade_state failed: %s",e)
+    return TradeState()
+
+
+def clear_trade_state(symbol:str):
+    """Remove trade from DB after EXIT."""
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM open_trades WHERE symbol=%s",(symbol,))
+            conn.commit()
+        log.info("Trade state cleared.")
+    except Exception as e:
+        log.warning("clear_trade_state failed: %s",e)
+
+
 def load_stats(symbol:str)->PerfStats:
     stats=PerfStats()
     try:
@@ -674,6 +723,12 @@ def generate_signal(votes:Votes,ctx:dict,regime:str,
         return "HOLD",conf,f"VIX={vix:.1f} too high"
     if in_trade:
         return "HOLD",conf,"Already in trade"
+    if not is_safe_to_trade():
+        from datetime import timedelta
+        ist=datetime.now(timezone.utc)+timedelta(hours=5,minutes=30)
+        return "HOLD",conf,(
+            f"Outside safe window ({ist.strftime('%H:%M')} IST) — "
+            f"skip opening range 9:15-9:30 / EOD 3:15-3:30")
     bt,st=get_dynamic_threshold(regime,vix)
     if score>=bt:
         return "BUY_CE",conf,(
@@ -928,11 +983,26 @@ def is_market_open() -> bool:
     """Returns True only during NSE market hours 9:15 AM - 3:30 PM IST."""
     from datetime import timedelta
     ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    if ist.weekday() >= 5:          # Saturday=5, Sunday=6
+    if ist.weekday() >= 5:
         return False
     market_open  = ist.replace(hour=9,  minute=15, second=0, microsecond=0)
     market_close = ist.replace(hour=15, minute=30, second=0, microsecond=0)
     return market_open <= ist <= market_close
+
+
+def is_safe_to_trade() -> bool:
+    """
+    True only 9:30 AM - 3:15 PM IST.
+    Skips opening range (9:15-9:30) noise and EOD window (3:15-3:30).
+    Only blocks NEW entries — EXIT fires anytime via check_exit().
+    """
+    if not is_market_open():
+        return False
+    from datetime import timedelta
+    ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    safe_start = ist.replace(hour=9,  minute=30, second=0, microsecond=0)
+    safe_end   = ist.replace(hour=15, minute=15, second=0, microsecond=0)
+    return safe_start <= ist <= safe_end
 
 
 def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
@@ -950,7 +1020,7 @@ def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
     # CURRENT_TRADE resets to empty on every new run. If we already have
     # an open trade in memory (loop mode), keep it. Otherwise query DB.
     if not CURRENT_TRADE.in_trade:
-        CURRENT_TRADE = load_open_trade_from_db(symbol)
+        CURRENT_TRADE = load_trade_state(symbol)
 
     stats=load_stats(symbol)
     df=get_market_data(symbol)
@@ -996,6 +1066,7 @@ def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
             exit_reason=exit_reason,pnl_pct=pnl_pct,
             paper_mode=paper)
         CURRENT_TRADE=TradeState()
+        clear_trade_state(symbol)
         print_signal(result,stats)
         save_signal(result)
         send_telegram(result)
@@ -1020,6 +1091,7 @@ def run_strategy(symbol:str,paper:bool=False)->Optional[SignalResult]:
                     option_expiry=trade.expiry,option_entry=trade.last_price,
                     entry_time=ts.strftime("%H:%M:%S"),
                     lots=trade.recommended_lots)
+            save_trade_state(symbol, CURRENT_TRADE, paper)
 
     result=SignalResult(
         symbol=symbol,action=action,
@@ -1054,7 +1126,7 @@ def run_loop(symbol:str,interval:int,paper:bool=False):
     from datetime import timedelta
     mode="PAPER" if paper else "LIVE"
     log.info("v4.0 | %s | %s | every %ds",symbol,mode,interval)
-    ensure_signals_table()
+    ensure_tables()
     while True:
         try:
             ist_now=datetime.now(timezone.utc)+timedelta(hours=5,minutes=30)
@@ -1082,7 +1154,7 @@ if __name__=="__main__":
     parser.add_argument("--stats",action="store_true")
     args=parser.parse_args()
     try:
-        ensure_signals_table()
+        ensure_tables()
         if args.backtest or args.stats: run_backtest(args.symbol)
         elif args.loop>0: run_loop(args.symbol,args.loop,paper=args.paper)
         else: run_strategy(args.symbol,paper=args.paper)
